@@ -1,220 +1,151 @@
-import subprocess
+import os
 import re
+import json
+import subprocess
+from typing import Dict
+
+# ============================================================
+# CONFIGURATION
+# ============================================================
+
+MODEL_NAME = "Qwen/Qwen2.5-7B-Instruct"
 
 
 # ============================================================
-# AEGIS LOCAL AI MODEL
+# COMMON PROMPT
 # ============================================================
 
-MODEL_NAME = "qwen2.5:1.5b"
+def build_prompt(message: str) -> str:
+    return f"""
+You are Aegis, a scam-analysis system.
 
-
-# ============================================================
-# ANALYZE MESSAGE WITH LOCAL LLM
-# ============================================================
-
-def analyze_with_llm(message):
-    """
-    Analyze any user message using the locally installed
-    Qwen model through Ollama.
-
-    The model evaluates meaning, intent, context and
-    requested actions rather than relying on exact keywords.
-    """
-
-    prompt = f"""
-You are Aegis, a careful banking scam-analysis system.
-
-Your job is to determine whether the USER MESSAGE itself
-is attempting to manipulate, deceive, or pressure the
-recipient into taking a risky action.
-
-Analyze the COMPLETE MEANING, INTENT, CONTEXT and REQUESTED
-ACTION of the message.
+Analyze the user's message based on INTENT and CONTEXT, not
+individual keywords.
 
 IMPORTANT:
+- A message warning people about scams is NOT itself a scam.
+- A message containing words such as OTP, PIN, password, bank,
+  KYC, account, or security is NOT automatically a scam.
+- HIGH_RISK means the message asks or pressures the recipient
+  to perform a dangerous action such as revealing credentials,
+  sending money, downloading an unknown application, clicking
+  a suspicious link, or responding to an impersonated authority.
+- SUSPICIOUS means there are warning signs but the intent is
+  ambiguous.
+- LOW_RISK means the message is informational, educational,
+  preventive, or does not request a risky action.
 
-1. Do NOT classify a message as a scam merely because it
-   mentions words such as:
-   OTP, PIN, password, bank, account, payment, KYC,
-   security, verification, fraud, money or card.
-
-2. A message that WARNS people about scams is normally
-   LOW_RISK.
-
-3. A message that tells people NOT to share passwords,
-   OTPs, PINs, card details or money is normally LOW_RISK.
-
-4. A message that asks the recipient to reveal credentials,
-   transfer money, pay a fee, click a link, download software,
-   install an application or provide sensitive information
-   can be HIGH_RISK.
-
-5. A message that threatens account closure, suspension,
-   penalties or loss of money in order to pressure the
-   recipient into an action should receive increased risk.
-
-6. A message promising unexpected rewards, loans, refunds,
-   winnings, waivers or financial benefits in exchange for
-   payment or personal information should receive increased
-   risk.
-
-7. Distinguish carefully between:
-
-   WARNING ABOUT A SCAM
-   and
-   REQUEST TO PERFORM A RISKY ACTION.
-
-8. Do NOT use individual keywords as the decision.
-
-9. Consider the relationship between statements.
-   For example:
-
-   "Never share your OTP with anyone."
-   -> LOW_RISK
-
-   "Send your OTP to verify your account."
-   -> HIGH_RISK
-
-10. If the message is genuinely ambiguous, use SUSPICIOUS.
-
-11. Do not give false reassurance. When uncertain,
-    recommend independent verification.
-
-12. The message may be completely different from any
-    examples previously seen by the system.
-
-Return ONLY the following five fields.
+Return ONLY these five lines:
 
 VERDICT: HIGH_RISK, SUSPICIOUS, or LOW_RISK
-CONFIDENCE: number between 0 and 1
+CONFIDENCE: number from 0 to 1
 INTENT: one short sentence
 REASON: one short sentence
 ACTION: one short safe action
 
-USER MESSAGE:
+User message:
 {message}
 """
 
-    try:
 
-        result = subprocess.run(
-            [
-                "ollama",
-                "run",
-                MODEL_NAME,
-                prompt
-            ],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            timeout=90
-        )
+# ============================================================
+# OLLAMA — LOCAL MODE
+# ============================================================
 
-        output = result.stdout.strip()
+def analyze_with_ollama(message: str) -> Dict:
+    prompt = build_prompt(message)
 
-        if not output:
+    result = subprocess.run(
+    [
+        "ollama",
+        "run",
+        "qwen2.5:1.5b",
+        prompt
+    ],
+    capture_output=True,
+    text=True,
+    encoding="utf-8",
+    errors="replace",
+    timeout=90
+)
 
-            return {
-                "verdict": "SUSPICIOUS",
-                "confidence": 0.0,
-                "intent": "The model did not return an analysis.",
-                "reason": "Aegis could not obtain a reliable AI response.",
-                "action": "Verify the message independently before acting."
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or "Ollama failed")
+
+    return parse_result(result.stdout)
+
+
+# ============================================================
+# HUGGING FACE — CLOUD MODE
+# ============================================================
+
+def analyze_with_huggingface(message: str) -> Dict:
+    from huggingface_hub import InferenceClient
+
+    token = os.getenv("HF_TOKEN")
+
+    if not token:
+        raise RuntimeError("HF_TOKEN is not configured")
+
+    client = InferenceClient(
+        api_key=token,
+        provider="auto"
+    )
+
+    response = client.chat.completions.create(
+        model=MODEL_NAME,
+        messages=[
+            {
+                "role": "user",
+                "content": build_prompt(message)
             }
+        ],
+        max_tokens=180,
+        temperature=0.1
+    )
 
-        return parse_response(output)
+    text = response.choices[0].message.content
 
-    except subprocess.TimeoutExpired:
-
-        return {
-            "verdict": "SUSPICIOUS",
-            "confidence": 0.0,
-            "intent": "The AI analysis timed out.",
-            "reason": "The local model did not respond within the allowed time.",
-            "action": "Verify the message independently before acting."
-        }
-
-    except FileNotFoundError:
-
-        return {
-            "verdict": "SUSPICIOUS",
-            "confidence": 0.0,
-            "intent": "The local AI engine could not be started.",
-            "reason": "Ollama was not found on this system.",
-            "action": "Verify the message independently before acting."
-        }
-
-    except Exception as e:
-
-        return {
-            "verdict": "SUSPICIOUS",
-            "confidence": 0.0,
-            "intent": "The message could not be analyzed.",
-            "reason": f"Aegis encountered an analysis error: {e}",
-            "action": "Verify the message independently before acting."
-        }
+    return parse_result(text)
 
 
 # ============================================================
-# PARSE MODEL RESPONSE
+# PARSER
 # ============================================================
 
-def parse_response(output):
+def parse_result(text: str) -> Dict:
 
-    # --------------------------------------------------------
-    # VERDICT
-    # --------------------------------------------------------
+    text = text.replace("\r", "")
 
     verdict_match = re.search(
         r"VERDICT\s*:\s*(HIGH_RISK|SUSPICIOUS|LOW_RISK)",
-        output,
+        text,
         re.IGNORECASE
     )
-
-    # --------------------------------------------------------
-    # CONFIDENCE
-    # --------------------------------------------------------
 
     confidence_match = re.search(
-        r"CONFIDENCE\s*:\s*([0-9]*\.?[0-9]+)",
-        output,
+        r"CONFIDENCE\s*:\s*(0(?:\.\d+)?|1(?:\.0+)?)",
+        text,
         re.IGNORECASE
     )
 
-    # --------------------------------------------------------
-    # INTENT
-    # --------------------------------------------------------
-
     intent_match = re.search(
-        r"INTENT\s*:\s*(.*?)(?=\s*REASON\s*:|\Z)",
-        output,
-        re.IGNORECASE | re.DOTALL
+        r"INTENT\s*:\s*(.+)",
+        text,
+        re.IGNORECASE
     )
-
-    # --------------------------------------------------------
-    # REASON
-    # --------------------------------------------------------
 
     reason_match = re.search(
-        r"REASON\s*:\s*(.*?)(?=\s*ACTION\s*:|\Z)",
-        output,
-        re.IGNORECASE | re.DOTALL
+        r"REASON\s*:\s*(.+)",
+        text,
+        re.IGNORECASE
     )
-
-    # --------------------------------------------------------
-    # ACTION
-    # --------------------------------------------------------
 
     action_match = re.search(
-        r"ACTION\s*:\s*(.*)",
-        output,
-        re.IGNORECASE | re.DOTALL
+        r"ACTION\s*:\s*(.+)",
+        text,
+        re.IGNORECASE
     )
-
-    # --------------------------------------------------------
-    # SAFE DEFAULTS
-    # --------------------------------------------------------
 
     verdict = (
         verdict_match.group(1).upper()
@@ -222,58 +153,28 @@ def parse_response(output):
         else "SUSPICIOUS"
     )
 
-    if confidence_match:
-
-        try:
-            confidence = float(
-                confidence_match.group(1)
-            )
-
-        except ValueError:
-
-            confidence = 0.0
-
-    else:
-
-        confidence = 0.0
-
-    confidence = min(
-        max(confidence, 0.0),
-        1.0
+    confidence = (
+        float(confidence_match.group(1))
+        if confidence_match
+        else 0.50
     )
 
     intent = (
         intent_match.group(1).strip()
         if intent_match
-        else "Unable to determine the message intent."
+        else "Unable to determine intent."
     )
 
     reason = (
         reason_match.group(1).strip()
         if reason_match
-        else "Unable to determine why the message was classified this way."
+        else "The message requires independent verification."
     )
 
     action = (
         action_match.group(1).strip()
         if action_match
-        else "Verify the message independently before acting."
-    )
-
-    # --------------------------------------------------------
-    # CLEAN OUTPUT
-    # --------------------------------------------------------
-
-    intent = " ".join(
-        intent.split()
-    )
-
-    reason = " ".join(
-        reason.split()
-    )
-
-    action = " ".join(
-        action.split()
+        else "Verify the message through an official channel."
     )
 
     return {
@@ -283,3 +184,37 @@ def parse_response(output):
         "reason": reason,
         "action": action
     }
+
+
+# ============================================================
+# MAIN FUNCTION
+# ============================================================
+
+def analyze_with_llm(message: str) -> Dict:
+
+    # --------------------------------------------------------
+    # FIRST: try local Ollama
+    # --------------------------------------------------------
+
+    try:
+        return analyze_with_ollama(message)
+
+    except Exception:
+        pass
+
+    # --------------------------------------------------------
+    # SECOND: use Hugging Face on cloud
+    # --------------------------------------------------------
+
+    try:
+        return analyze_with_huggingface(message)
+
+    except Exception as e:
+
+        return {
+            "verdict": "SUSPICIOUS",
+            "confidence": 0.0,
+            "intent": "The AI analysis engine could not be reached.",
+            "reason": f"Cloud AI error: {str(e)}",
+            "action": "Verify the message through an official channel."
+        }
