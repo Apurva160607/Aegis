@@ -4,47 +4,28 @@ import subprocess
 from typing import Dict
 
 
-# ============================================================
-# AEGIS AI ANALYZER
-# Local: Ollama + Qwen 2.5 1.5B
-# Cloud: Hugging Face Inference + Qwen 2.5 1.5B
-# ============================================================
-
 MODEL_NAME = "Qwen/Qwen2.5-1.5B-Instruct"
 
-
-# ============================================================
-# PROMPT
-# ============================================================
 
 def build_prompt(message: str) -> str:
     return f"""
 You are Aegis, an AI scam-analysis system.
 
-Analyze the user's message based on its INTENT and CONTEXT,
-not individual keywords.
+Analyze the user's message based on INTENT and CONTEXT, not
+individual keywords.
 
-IMPORTANT RULES:
-
-1. A message warning people about scams is NOT itself a scam.
-2. Words such as OTP, PIN, password, bank, KYC, account,
-   security, or payment do NOT automatically make a message
-   a scam.
-3. HIGH_RISK means the message asks, pressures, or tricks the
-   recipient into performing a dangerous action.
-4. Dangerous actions include:
-   - revealing OTP, PIN, password, card or banking information
-   - sending money or paying an unexpected fee
-   - downloading an unknown APK/application
-   - clicking a suspicious link
-   - responding to an impersonated authority
-   - urgently verifying sensitive information
-5. SUSPICIOUS means there are warning signs but the intent
-   cannot be determined with high confidence.
-6. LOW_RISK means the message is informational, educational,
-   preventive, or does not request a risky action.
-7. A genuine warning such as "Never share your OTP" should
-   normally be LOW_RISK.
+IMPORTANT:
+- A warning about scams is NOT itself a scam.
+- OTP, PIN, password, bank, KYC, account, security, or payment
+  words do NOT automatically mean a message is a scam.
+- HIGH_RISK means the message asks, pressures, or tricks the
+  recipient into performing a dangerous action.
+- Dangerous actions include revealing credentials, sending money,
+  downloading an unknown application, clicking a suspicious link,
+  or urgently providing sensitive information.
+- SUSPICIOUS means warning signs exist but intent is ambiguous.
+- LOW_RISK means the message is informational, educational,
+  preventive, or does not request a risky action.
 
 Return ONLY these five lines:
 
@@ -59,105 +40,78 @@ User message:
 """
 
 
-# ============================================================
-# REMOVE TERMINAL CONTROL CHARACTERS
-# ============================================================
-
 def clean_text(text: str) -> str:
-    """
-    Removes ANSI terminal escape sequences that Ollama can
-    sometimes print on Windows.
-    """
     if not text:
         return ""
 
-    text = re.sub(r"\x1b\[[0-9;?]*[ -/]*[@-~]", "", text)
+    text = re.sub(
+        r"\x1b\[[0-9;?]*[ -/]*[@-~]",
+        "",
+        text
+    )
+
     text = text.replace("\x1b", "")
     return text.strip()
 
 
-# ============================================================
-# PARSE AI RESPONSE
-# ============================================================
-
 def parse_result(text: str) -> Dict:
-    """
-    Convert the model's five-line response into a dictionary.
-    """
-
     text = clean_text(text)
 
     verdict_match = re.search(
-        r"(?im)^\s*VERDICT\s*:\s*(HIGH_RISK|SUSPICIOUS|LOW_RISK)\s*$",
-        text
+        r"VERDICT\s*:\s*(HIGH_RISK|SUSPICIOUS|LOW_RISK)",
+        text,
+        re.IGNORECASE
     )
 
     confidence_match = re.search(
-        r"(?im)^\s*CONFIDENCE\s*:\s*(0(?:\.\d+)?|1(?:\.0+)?)\s*$",
-        text
+        r"CONFIDENCE\s*:\s*(0(?:\.\d+)?|1(?:\.0+)?)",
+        text,
+        re.IGNORECASE
     )
 
     intent_match = re.search(
-        r"(?im)^\s*INTENT\s*:\s*(.+?)\s*$",
-        text
+        r"INTENT\s*:\s*(.+)",
+        text,
+        re.IGNORECASE
     )
 
     reason_match = re.search(
-        r"(?im)^\s*REASON\s*:\s*(.+?)\s*$",
-        text
+        r"REASON\s*:\s*(.+)",
+        text,
+        re.IGNORECASE
     )
 
     action_match = re.search(
-        r"(?im)^\s*ACTION\s*:\s*(.+?)\s*$",
-        text
+        r"ACTION\s*:\s*(.+)",
+        text,
+        re.IGNORECASE
     )
 
-    # -----------------------------
-    # Verdict
-    # -----------------------------
-
-    if verdict_match:
-        verdict = verdict_match.group(1).upper()
-    else:
-        # Conservative fallback
-        verdict = "SUSPICIOUS"
-
-    # -----------------------------
-    # Confidence
-    # -----------------------------
+    verdict = (
+        verdict_match.group(1).upper()
+        if verdict_match
+        else "SUSPICIOUS"
+    )
 
     if confidence_match:
         try:
             confidence = float(confidence_match.group(1))
-            confidence = max(0.0, min(1.0, confidence))
         except ValueError:
             confidence = 0.0
     else:
         confidence = 0.0
 
-    # -----------------------------
-    # Intent
-    # -----------------------------
-
     intent = (
         intent_match.group(1).strip()
         if intent_match
-        else "Unable to determine the message intent."
+        else "Unable to determine message intent."
     )
-
-    # -----------------------------
-    # Reason
-    # -----------------------------
 
     reason = (
         reason_match.group(1).strip()
         if reason_match
         else "The message requires independent verification."
     )
-
-    # -----------------------------
-    # Action
-    # -----------------------------
 
     action = (
         action_match.group(1).strip()
@@ -174,19 +128,7 @@ def parse_result(text: str) -> Dict:
     }
 
 
-# ============================================================
-# GET HUGGING FACE TOKEN
-# ============================================================
-
 def get_hf_token():
-    """
-    Reads the Hugging Face token from Streamlit Secrets when
-    deployed on Streamlit Cloud.
-
-    Falls back to the HF_TOKEN environment variable locally.
-    """
-
-    # Try Streamlit Secrets first
     try:
         import streamlit as st
 
@@ -198,7 +140,6 @@ def get_hf_token():
     except Exception:
         pass
 
-    # Try environment variable
     token = os.getenv("HF_TOKEN")
 
     if token:
@@ -207,17 +148,7 @@ def get_hf_token():
     return None
 
 
-# ============================================================
-# LOCAL OLLAMA ANALYZER
-# ============================================================
-
 def analyze_with_ollama(message: str) -> Dict:
-    """
-    Analyze using the local Ollama installation.
-
-    Used when running Aegis on the developer's laptop.
-    """
-
     prompt = build_prompt(message)
 
     result = subprocess.run(
@@ -250,17 +181,7 @@ def analyze_with_ollama(message: str) -> Dict:
     return parse_result(output)
 
 
-# ============================================================
-# CLOUD HUGGING FACE ANALYZER
-# ============================================================
-
 def analyze_with_huggingface(message: str) -> Dict:
-    """
-    Analyze using Hugging Face hosted inference.
-
-    Used when Aegis is deployed on Streamlit Cloud.
-    """
-
     from huggingface_hub import InferenceClient
 
     token = get_hf_token()
@@ -302,21 +223,7 @@ def analyze_with_huggingface(message: str) -> Dict:
     return parse_result(text)
 
 
-# ============================================================
-# MAIN AEGIS ANALYZER
-# ============================================================
-
 def analyze_with_llm(message: str) -> Dict:
-    """
-    Main AI entry point used by app.py.
-
-    Local machine:
-        Ollama → Qwen 2.5
-
-    Streamlit Cloud:
-        Hugging Face → Qwen 2.5
-    """
-
     message = str(message).strip()
 
     if not message:
@@ -328,31 +235,20 @@ def analyze_with_llm(message: str) -> Dict:
             "action": "Enter a message and try again."
         }
 
-    # ========================================================
-    # 1. TRY LOCAL OLLAMA
-    # ========================================================
-
+    # First try local Ollama.
     try:
         return analyze_with_ollama(message)
-
     except Exception:
-        # Ollama is normally unavailable on Streamlit Cloud.
-        # We silently continue to the cloud model.
         pass
 
-    # ========================================================
-    # 2. TRY HUGGING FACE CLOUD MODEL
-    # ========================================================
-
+    # If Ollama is unavailable, use Hugging Face.
     try:
         return analyze_with_huggingface(message)
-
     except Exception as cloud_error:
-
         return {
             "verdict": "SUSPICIOUS",
             "confidence": 0.0,
-            "intent": "The AI analysis engine could not be reached.",
-            "reason": f"Cloud AI error: {str(cloud_error)}",
+            "intent": "The cloud AI engine could not be reached.",
+            "reason": f"Cloud AI error: {cloud_error}",
             "action": "Verify the message through an official channel."
         }
