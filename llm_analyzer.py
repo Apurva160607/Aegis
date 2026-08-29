@@ -8,7 +8,7 @@ from typing import Dict
 # CONFIGURATION
 # ============================================================
 
-MODEL_NAME = "Qwen/Qwen2.5-7B-Instruct"
+MODEL_NAME = "Qwen/Qwen2.5-1.5B-Instruct"
 
 
 # ============================================================
@@ -84,8 +84,8 @@ def analyze_with_huggingface(message: str) -> Dict:
 
     token = os.getenv("HF_TOKEN")
 
-    if not token:
-        raise RuntimeError("HF_TOKEN is not configured")
+if not token:
+    raise RuntimeError("HF_TOKEN is not configured")
 
     client = InferenceClient(
         api_key=token,
