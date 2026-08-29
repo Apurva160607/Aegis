@@ -112,6 +112,12 @@ PDF_PATH = Path("data/datasets.pdf")
 if "result" not in st.session_state:
     st.session_state.result = None
 
+if "sender" not in st.session_state:
+    st.session_state.sender = ""
+
+if "sender_type" not in st.session_state:
+    st.session_state.sender_type = "Not Available"
+
 if "message" not in st.session_state:
     st.session_state.message = ""
 
@@ -201,7 +207,7 @@ col1, col2, col3, col4 = st.columns(4)
 with col1:
     st.metric(
         "AI Engine",
-        "Qwen 2.5",
+        "all-MiniLM-L6-v2",
     )
 
 with col2:
@@ -266,6 +272,8 @@ with demo1:
     ):
 
         st.session_state.message = DEMO_SCAM
+        st.session_state.sender = ""
+        st.session_state.sender_type = "Not Available"
         st.session_state.result = None
 
 
@@ -277,6 +285,8 @@ with demo2:
     ):
 
         st.session_state.message = DEMO_SAFE
+        st.session_state.sender = ""
+        st.session_state.sender_type = "Not Available"
         st.session_state.result = None
 
 
@@ -288,6 +298,8 @@ with demo3:
     ):
 
         st.session_state.message = DEMO_NEW_SCAM
+        st.session_state.sender = ""
+        st.session_state.sender_type = "Not Available"
         st.session_state.result = None
 
 
@@ -299,6 +311,8 @@ with demo4:
     ):
 
         st.session_state.message = ""
+        st.session_state.sender = ""
+        st.session_state.sender_type = "Not Available"
         st.session_state.result = None
 
 
@@ -323,6 +337,61 @@ message = st.text_area(
         "you verify your identity immediately."
     ),
 )
+
+# ============================================================
+# SENDER INFORMATION
+# ============================================================
+
+st.markdown("### 📩 Sender information")
+
+sender_type = st.selectbox(
+    "Sender type",
+    [
+        "Not Available",
+        "Contact Number",
+        "Email Address",
+        "Sender ID",
+    ],
+    key="sender_type",
+    help=(
+        "Choose the type of sender information available "
+        "in the original message."
+    ),
+)
+
+if sender_type == "Contact Number":
+
+    sender = st.text_input(
+        "Sender contact number",
+        key="sender",
+        placeholder="+91 9876543210",
+    )
+
+elif sender_type == "Email Address":
+
+    sender = st.text_input(
+        "Sender email address",
+        key="sender",
+        placeholder="example@company.com",
+    )
+
+elif sender_type == "Sender ID":
+
+    sender = st.text_input(
+        "Sender ID",
+        key="sender",
+        placeholder="Example: NOBRKR-S",
+    )
+
+else:
+
+    sender = ""
+
+    st.caption(
+        "If a link is present but the sender is unavailable, "
+        "Aegis will ask for sender information before making "
+        "the final HIGH RISK or LOW RISK decision."
+    )
 
 
 # ============================================================
@@ -352,13 +421,15 @@ if analyze_clicked:
 
 
     with st.spinner(
-        "Aegis is analyzing intent, context and risk..."
+        "Aegis is analyzing the sender, link destination and message..."
     ):
 
         try:
 
             result = analyze_with_llm(
-                message
+                message,
+                sender,
+                sender_type,
             )
 
             st.session_state.result = result
@@ -458,6 +529,52 @@ if result is not None:
 
 
     # ========================================================
+    # SENDER VERIFICATION REQUIRED
+    # ========================================================
+
+    if verdict == "VERIFY_SENDER":
+
+        st.warning(
+            "⚠️ Sender verification required"
+        )
+
+        st.info(
+            reason
+        )
+
+        st.markdown(
+            "### 🔎 What Aegis needs next"
+        )
+
+        st.write(
+            "A link was detected. Please select the available "
+            "sender type above — Contact Number, Email Address, "
+            "or Sender ID — enter the value, and click "
+            "**Analyze Message** again. Aegis will investigate "
+            "the sender and compare it with the link before "
+            "giving the final HIGH RISK or LOW RISK result."
+        )
+
+        links = result.get("links", [])
+
+        if links:
+            st.markdown("**Detected link:**")
+            for link in links:
+                st.code(link, language=None)
+
+        st.markdown(
+            "### 🛡️ Safety recommendation"
+        )
+
+        st.error(
+            "Do not open or interact with the link until "
+            "the sender has been verified."
+        )
+
+        st.stop()
+
+
+    # ========================================================
     # VERDICT
     # ========================================================
 
@@ -478,16 +595,6 @@ if result is not None:
                 "Strong indicators of potentially fraudulent intent."
             )
 
-        elif verdict == "SUSPICIOUS":
-
-            st.warning(
-                "## 🟠 SUSPICIOUS"
-            )
-
-            st.caption(
-                "The message requires independent verification."
-            )
-
         else:
 
             st.success(
@@ -502,7 +609,7 @@ if result is not None:
     with result_col2:
 
         st.metric(
-            "AI Confidence",
+            "Risk Score",
             f"{confidence * 100:.0f}%",
         )
 
@@ -519,7 +626,7 @@ if result is not None:
             ),
             1.0,
         ),
-        text=f"Model confidence: {confidence * 100:.0f}%",
+        text=f"Risk score: {confidence * 100:.0f}%",
     )
 
 
@@ -551,6 +658,158 @@ if result is not None:
             reason
         )
 
+
+    # ========================================================
+    # SENDER INVESTIGATION DETAILS
+    # ========================================================
+
+    sender_status = result.get(
+        "sender_status",
+        "NOT_PROVIDED"
+    )
+
+    if result.get("links"):
+
+        st.markdown(
+            "### 🔎 Sender & Link Investigation"
+        )
+
+        sender_domain = result.get(
+            "sender_domain",
+            ""
+        )
+
+        link_domains = result.get(
+            "link_domains",
+            []
+        )
+
+        detail_col1, detail_col2 = st.columns(2)
+
+        with detail_col1:
+
+            st.write(
+                "**Sender type:**",
+                result.get("sender_type", sender_type)
+            )
+
+            st.write(
+                "**Sender status:**",
+                sender_status
+            )
+
+            sender_value = result.get(
+                "sender_value",
+                ""
+            )
+
+            if sender_value:
+                st.write(
+                    "**Sender:**",
+                    sender_value
+                )
+
+            if sender_domain:
+                st.write(
+                    "**Sender domain:**",
+                    sender_domain
+                )
+
+        with detail_col2:
+
+            if link_domains:
+                st.write(
+                    "**Link domain(s):**",
+                    ", ".join(link_domains)
+                )
+
+        st.info(
+            clean_model_text(
+                result.get(
+                    "sender_reason",
+                    "Sender investigation completed."
+                )
+            )
+        )
+
+
+    # ========================================================
+    # LIVE LINK INVESTIGATION DETAILS
+    # ========================================================
+
+    link_results = result.get("link_results", [])
+
+    if link_results:
+
+        st.markdown(
+            "### 🌐 Link Investigation"
+        )
+
+        st.caption(
+            "Aegis inspected the submitted URL and, when reachable, "
+            "the final destination page before producing the risk result."
+        )
+
+        for index, link_info in enumerate(link_results, start=1):
+
+            with st.expander(
+                f"Link {index}: {link_info.get('original_url', 'Unknown URL')}"
+            ):
+
+                info_col1, info_col2 = st.columns(2)
+
+                with info_col1:
+                    st.write(
+                        "**Original domain:**",
+                        link_info.get("original_domain") or "Unknown",
+                    )
+
+                    st.write(
+                        "**Final destination:**",
+                        link_info.get("final_url") or "Unknown",
+                    )
+
+                    st.write(
+                        "**Final domain:**",
+                        link_info.get("final_domain") or "Unknown",
+                    )
+
+                with info_col2:
+                    status = link_info.get("status", "UNVERIFIED")
+                    if status == "CLEAN":
+                        st.success("✓ Destination inspected — no strong indicators found")
+                    elif status == "SUSPICIOUS":
+                        st.error("⚠ Destination shows suspicious indicators")
+                    else:
+                        st.warning("? Destination could not be fully verified")
+
+                    st.write(
+                        "**HTTP status:**",
+                        link_info.get("http_status") or "Not available",
+                    )
+
+                    st.write(
+                        "**Page checked:**",
+                        "Yes" if link_info.get("page_checked") else "No",
+                    )
+
+                    st.write(
+                        "**Page title:**",
+                        link_info.get("page_title") or "Not available",
+                    )
+
+                findings = link_info.get("findings", [])
+                if findings:
+                    st.markdown("**Detected indicators:**")
+                    for finding in findings:
+                        st.write(f"• {finding}")
+                else:
+                    st.write("**Detected indicators:** None")
+
+                if link_info.get("error"):
+                    st.caption(
+                        "Inspection note: " + clean_model_text(link_info["error"])
+                    )
 
     # ========================================================
     # TRUSTED EVIDENCE
@@ -622,24 +881,6 @@ if result is not None:
         )
 
 
-    elif verdict == "SUSPICIOUS":
-
-        st.warning(
-            action
-        )
-
-        st.markdown(
-            """
-**Before you act**
-
-- Verify the sender independently.
-- Do not rush because of threats or urgency.
-- Avoid suspicious links and downloads.
-- Never disclose sensitive credentials.
-"""
-        )
-
-
     else:
 
         st.success(
@@ -690,8 +931,9 @@ email, financial alert or suspicious communication.
 
 **2. Intent & Context Analysis**
 
-A locally running Qwen model analyzes the meaning
-of the message instead of simply matching keywords.
+A locally running Sentence Transformer model,
+all-MiniLM-L6-v2, analyzes the semantic meaning of the
+message instead of relying only on exact keyword matches.
 
 It considers:
 
@@ -704,6 +946,14 @@ It considers:
 - Suspicious verification
 - Downloads and links
 - Financial promises
+
+**Link-specific verification**
+
+If a link is detected, Aegis does not assume that the link is malicious.
+It requests sender information, safely inspects the submitted URL,
+checks redirects and the reachable destination page, looks for
+phishing indicators, and then compares the destination with the
+supplied sender identity before producing the final risk assessment.
 
 **3. Risk Assessment**
 
@@ -730,7 +980,7 @@ a practical safe next step.
         st.divider()
 
         st.write(
-            "**AI Model:** Qwen 2.5 1.5B"
+            "**AI Model:** Sentence Transformer — all-MiniLM-L6-v2"
         )
 
         st.write(
